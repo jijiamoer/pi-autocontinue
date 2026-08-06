@@ -17,19 +17,19 @@ Pi packages execute with full local user permissions. Review the source before i
 Install the tested immutable revision globally:
 
 ```bash
-pi install git:github.com/limars874/pi-autocontinue@INSTALL_SHA_TO_BE_FILLED_AFTER_COMMIT
+pi install git:github.com/limars874/pi-autocontinue@13c1255b4dd820e0182367ece1c9e7190d63559d
 ```
 
 Install it only for the current trusted project:
 
 ```bash
-pi install -l git:github.com/limars874/pi-autocontinue@INSTALL_SHA_TO_BE_FILLED_AFTER_COMMIT
+pi install -l git:github.com/limars874/pi-autocontinue@13c1255b4dd820e0182367ece1c9e7190d63559d
 ```
 
 Try the same revision for one Pi process without modifying settings:
 
 ```bash
-pi -e git:github.com/limars874/pi-autocontinue@INSTALL_SHA_TO_BE_FILLED_AFTER_COMMIT
+pi -e git:github.com/limars874/pi-autocontinue@13c1255b4dd820e0182367ece1c9e7190d63559d
 ```
 
 Run `/reload` in an existing Pi session after installation. Newly started sessions load it automatically.
