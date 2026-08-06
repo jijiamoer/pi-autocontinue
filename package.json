@@ -3,11 +3,23 @@
   "version": "0.1.0",
   "description": "A bounded keepalive extension that continues the current Pi task after the agent settles",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/limars874/pi-autocontinue.git"
+  },
+  "homepage": "https://github.com/limars874/pi-autocontinue#readme",
+  "bugs": {
+    "url": "https://github.com/limars874/pi-autocontinue/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "keywords": ["pi-package", "pi", "pi-extension", "autocontinue", "keepalive", "agent"],
   "files": ["src", "README.md", "LICENSE"],
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.83.0 <1.0.0",
     "@earendil-works/pi-coding-agent": ">=0.83.0 <1.0.0",
+    "@earendil-works/pi-tui": ">=0.83.0 <1.0.0",
     "typebox": ">=1.1.24 <2.0.0"
   },
   "scripts": {
@@ -23,6 +35,7 @@
     "@biomejs/biome": "^2.4.8",
     "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
     "@types/node": "^20.0.0",
     "typebox": "1.1.24",
     "typescript": "^5.0.0",

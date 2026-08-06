@@ -10,20 +10,73 @@ function makeCtx(branch: any[]) {
 }
 
 describe("AutoContinueStateManager", () => {
-  it("arms, starts, consumes attempts, and persists each durable change", () => {
+  it("reserves normal attempts and commits them only after success", () => {
     const pi = makePi();
-    const manager = new AutoContinueStateManager(pi);
+    const manager = new AutoContinueStateManager(pi, { createId: () => "cycle-1" });
 
-    manager.arm(3, "project-template");
-    expect(manager.getState()).toMatchObject({ phase: "armed", maxAttempts: 3, attemptsUsed: 0 });
+    manager.arm(3, "project-template", "leaf-1");
+    expect(manager.getState()).toMatchObject({
+      phase: "armed",
+      maxAttempts: 3,
+      attemptsUsed: 0,
+      recoveryAttemptsUsed: 0,
+      startedFromLeafId: "leaf-1",
+    });
 
     expect(manager.beginFromUserInput()).toBe(true);
-    expect(manager.consumeAttempt()).toBe(1);
-    expect(manager.consumeAttempt()).toBe(2);
-    expect(manager.consumeAttempt()).toBe(3);
-    expect(manager.consumeAttempt()).toBeUndefined();
-    expect(manager.getState()).toMatchObject({ phase: "running", attemptsUsed: 3 });
-    expect(pi.appendEntry).toHaveBeenCalledTimes(5);
+    const pending = manager.reserveContinuation("settlement-0");
+    expect(pending).toMatchObject({ kind: "continuation", normalAttempt: 1 });
+    expect(manager.getState()).toMatchObject({ attemptsUsed: 0, pendingInjection: pending });
+
+    manager.recordSuccessfulSettlement("settlement-1");
+    expect(manager.getState()).toMatchObject({
+      phase: "running",
+      attemptsUsed: 1,
+      recoveryAttemptsUsed: 0,
+      lastHandledSettlementId: "settlement-1",
+    });
+  });
+
+  it("keeps a failed normal attempt reserved through recovery and commits after recovery succeeds", () => {
+    let now = 0;
+    const manager = new AutoContinueStateManager(makePi(), {
+      now: () => now,
+      createId: () => "cycle-2",
+    });
+    manager.startNow(3, "built-in", "leaf-1");
+    const normal = manager.reserveContinuation("settlement-0")!;
+
+    manager.recordTransientFailure("settlement-1", { category: "transient", summary: "502" }, 15_000);
+    expect(manager.getState()).toMatchObject({
+      attemptsUsed: 0,
+      reservedNormalAttempt: normal.normalAttempt,
+      recoveryAttemptsUsed: 0,
+      retryAt: 15_000,
+    });
+
+    now = 15_000;
+    const recovery = manager.reserveRecovery("settlement-1")!;
+    expect(recovery).toMatchObject({ kind: "recovery", recoveryAttempt: 1, normalAttempt: 1 });
+    expect(manager.getState()).toMatchObject({ recoveryAttemptsUsed: 1, retryAt: undefined });
+
+    manager.recordSuccessfulSettlement("settlement-2");
+    expect(manager.getState()).toMatchObject({
+      attemptsUsed: 1,
+      recoveryAttemptsUsed: 0,
+      reservedNormalAttempt: undefined,
+      pendingInjection: undefined,
+      lastHandledSettlementId: "settlement-2",
+    });
+  });
+
+  it("marks a pending injection as started durably", () => {
+    const manager = new AutoContinueStateManager(makePi(), { createId: () => "cycle-3" });
+    manager.startNow(2, "built-in");
+    manager.reserveContinuation();
+
+    expect(manager.markPendingStarted()).toBe(true);
+    expect(manager.markPendingStarted()).toBe(false);
+    expect(manager.getState()?.pendingInjection?.started).toBe(true);
   });
 
   it("stops an active cycle and ignores repeated stop requests", () => {
@@ -44,7 +97,7 @@ describe("AutoContinueStateManager", () => {
     expect(pi.appendEntry).toHaveBeenCalledTimes(1);
   });
 
-  it("restores the latest valid state from the current branch", () => {
+  it("restores current and legacy state from the current branch", () => {
     const manager = new AutoContinueStateManager(makePi());
     manager.loadFromSession(
       makeCtx([
@@ -63,6 +116,13 @@ describe("AutoContinueStateManager", () => {
       ]),
     );
 
-    expect(manager.getState()).toMatchObject({ phase: "running", maxAttempts: 5, attemptsUsed: 2 });
+    expect(manager.getState()).toMatchObject({
+      version: 2,
+      phase: "running",
+      maxAttempts: 5,
+      attemptsUsed: 2,
+      recoveryAttemptsUsed: 0,
+      cycleId: "legacy-3f",
+    });
   });
 });
