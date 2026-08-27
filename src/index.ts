@@ -110,6 +110,13 @@ function formatDuration(milliseconds: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+/** stop 记录（含 toast）的严重级别：done 视为成功，阻塞/耗尽/错误为警告。 */
+function stopEntryLevel(reason: AutoContinueStopReason): CommandMessageLevel {
+  if (reason === "done") return "success";
+  if (reason === "blocked" || reason === "recovery_exhausted" || reason === "error") return "warning";
+  return "info";
+}
+
 function formatStatus(state: AutoContinueState | null, now = Date.now()): string {
   if (!state || state.phase === "stopped") return "Auto-continue is inactive.";
   if (state.phase === "armed") {
@@ -243,16 +250,17 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     }
     if (current.retryAt !== undefined) {
       const nextRecoveryAttempt = Math.min(current.recoveryAttemptsUsed + 1, MAX_RECOVERY_ATTEMPTS);
+      // 恢复态同时展示续跑预算，避免分母从 maxAttempts 突变为 6 造成困惑
       ctx.ui.setStatus(
         STATUS_ID,
-        `auto retry ${nextRecoveryAttempt}/${MAX_RECOVERY_ATTEMPTS} in ${formatDuration(current.retryAt - Date.now())}`,
+        `auto retry ${nextRecoveryAttempt}/${MAX_RECOVERY_ATTEMPTS} in ${formatDuration(current.retryAt - Date.now())} · cont ${current.attemptsUsed}/${current.maxAttempts}`,
       );
       return;
     }
     if (current.pendingInjection?.kind === "recovery") {
       ctx.ui.setStatus(
         STATUS_ID,
-        `auto recovery ${current.pendingInjection.recoveryAttempt}/${MAX_RECOVERY_ATTEMPTS}`,
+        `auto recovery ${current.pendingInjection.recoveryAttempt}/${MAX_RECOVERY_ATTEMPTS} · cont ${current.attemptsUsed}/${current.maxAttempts}`,
       );
       return;
     }
@@ -279,9 +287,11 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     activeTemplate = null;
     setStopToolAvailability();
     updateStatus(ctx);
-    if (message && notify) {
-      const level = reason === "blocked" || reason === "recovery_exhausted" || reason === "error" ? "warning" : "info";
-      ctx.ui.notify(message, level);
+    if (message) {
+      const level = stopEntryLevel(reason);
+      // 落一条 durable transcript 记录：notify 转瞬即逝，无人值守时的停止原因必须可追溯
+      appendCommandEntry(message, level);
+      if (notify) ctx.ui.notify(message, level === "success" ? "info" : level);
     }
   };
 
@@ -603,7 +613,6 @@ export default function piAutoContinue(pi: ExtensionAPI) {
           return;
         }
         stop(ctx, "command", "Auto-continue stopped.", undefined, false);
-        appendCommandEntry("Auto-continue stopped.");
         return;
       }
 

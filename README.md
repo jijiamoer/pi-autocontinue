@@ -115,11 +115,15 @@ When active, the footer reports the current phase:
 ```text
 auto armed 0/10
 auto running 1/10
-auto retry 2/6 in 30s
-auto recovery 2/6
+auto retry 2/6 in 30s · cont 1/10
+auto recovery 2/6 · cont 1/10
 ```
 
+The footer tracks two budgets. `cont` counts successful continuations (the budget you arm), while the `N/6` counter tracks consecutive transport recoveries. Recovery states show both budgets together so the continuation budget never disappears from view.
+
 `/autocontinue status` prints a durable transcript entry with the same state. The footer is removed when the cycle stops.
+
+Every stop — `done`, `blocked`, budget exhaustion, recovery exhaustion, abort, external user input, or `/autocontinue stop` — also appends a durable UI-only `[auto-continue]` transcript entry with the stop summary, so an unattended stop stays visible after the notification toast disappears.
 
 ## Continuation And Recovery Budgets
 

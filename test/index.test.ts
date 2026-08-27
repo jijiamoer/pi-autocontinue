@@ -155,6 +155,10 @@ describe("pi-autocontinue wiring", () => {
     expect(status.has("autocontinue")).toBe(false);
     expect(notifications.at(-1)?.message).toMatch(/new external input/);
     expect(pi.activeTools).not.toContain("autocontinue_stop");
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/new external input/), level: "info" },
+    });
   });
 
   it("ignores extension messages for cycle cancellation", async () => {
@@ -184,6 +188,29 @@ describe("pi-autocontinue wiring", () => {
     expect(status.has("autocontinue")).toBe(false);
     expect(notifications).toHaveLength(0);
     expect(pi.activeTools).not.toContain("autocontinue_stop");
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/blocked.*Needs a real user decision/), level: "warning" },
+    });
+  });
+
+  it("records a success-level durable entry when the agent reports done", async () => {
+    const { pi, ctx, notifications } = setup();
+    await pi.command("autocontinue").handler("now 5", ctx);
+
+    await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "All milestones complete" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/done.*All milestones complete/), level: "success" },
+    });
+    expect(notifications).toHaveLength(0);
   });
 
   it("shows command stop once through its durable command entry", async () => {
@@ -228,18 +255,19 @@ describe("pi-autocontinue wiring", () => {
       await pi.fire("agent_settled", {}, ctx);
 
       expect(pi.sentMessages).toHaveLength(1);
-      expect(status.get("autocontinue")).toMatch(/auto retry 1\/6 in 15s/);
+      expect(status.get("autocontinue")).toBe("auto retry 1/6 in 15s · cont 0/3");
       expect(notifications.at(-1)?.message).toMatch(/scheduled in 15s/);
       expect(pi.entries.at(-1)?.data.attemptsUsed).toBe(0);
 
       await vi.advanceTimersByTimeAsync(15_000);
       expect(pi.sentMessages).toHaveLength(2);
       expect(pi.sentMessages[1].message.content).toMatch(/transport recovery 1\/6/);
+      expect(status.get("autocontinue")).toBe("auto recovery 1/6 · cont 0/3");
 
       await pi.fire("agent_start", {}, ctx);
       appendAssistant(assistantError("connection reset before headers"));
       await pi.fire("agent_settled", {}, ctx);
-      expect(status.get("autocontinue")).toMatch(/auto retry 2\/6 in 30s/);
+      expect(status.get("autocontinue")).toBe("auto retry 2/6 in 30s · cont 0/3");
 
       await vi.advanceTimersByTimeAsync(30_000);
       expect(pi.sentMessages).toHaveLength(3);
@@ -297,13 +325,19 @@ describe("pi-autocontinue wiring", () => {
       }
 
       expect(pi.sentMessages).toHaveLength(7);
-      expect(pi.entries.at(-1)?.data).toMatchObject({
+      const stateEntries = pi.entries.filter((entry) => entry.type === "autocontinue-state");
+      expect(stateEntries.at(-1)?.data).toMatchObject({
         phase: "stopped",
         attemptsUsed: 0,
         recoveryAttemptsUsed: 6,
         stopReason: "recovery_exhausted",
       });
       expect(notifications.at(-1)?.message).toMatch(/after 6 transport recovery attempts/);
+      // 停止原因必须同时留下 durable transcript 记录，无人值守时可追溯
+      expect(pi.entries.at(-1)).toMatchObject({
+        type: "autocontinue-command",
+        data: { message: expect.stringMatching(/after 6 transport recovery attempts/), level: "warning" },
+      });
     } finally {
       vi.useRealTimers();
     }
