@@ -28,6 +28,7 @@ describe("pi-autocontinue wiring", () => {
     expect(pi.command("autocontinue")).toBeDefined();
     expect(pi.entryRenderers.get("autocontinue-command")).toBeDefined();
     expect(pi.messageRenderers.get("autocontinue-prompt")).toBeDefined();
+    expect(pi.messageRenderers.get("autocontinue-note")).toBeDefined();
     expect(pi.tool("autocontinue_start")).toBeDefined();
     expect(pi.tool("autocontinue_stop")).toBeDefined();
     expect(pi.handlers.get("agent_settled")).toHaveLength(1);
@@ -159,6 +160,33 @@ describe("pi-autocontinue wiring", () => {
       type: "autocontinue-command",
       data: { message: expect.stringMatching(/new external input/), level: "info" },
     });
+    // 中断停止必须给模型留 nextTurn note，否则长程任务压缩后 agent 不知道保护曾存在
+    const note = pi.sentMessages.at(-1);
+    expect(note?.message.customType).toBe("autocontinue-note");
+    expect(note?.options).toEqual({ deliverAs: "nextTurn" });
+    expect(String(note?.message.content)).toContain("new user input stopped the cycle");
+    expect(String(note?.message.content)).toContain("call autocontinue_start");
+  });
+
+  it("queues a model-visible resume note when the run is aborted", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("now 3", ctx);
+    await pi.fire("agent_start", {}, ctx);
+    appendAssistant({ stopReason: "aborted", errorMessage: "The operation was aborted" });
+    await pi.fire("agent_settled", {}, ctx);
+
+    const stateEntries = pi.entries.filter((entry) => entry.type === "autocontinue-state");
+    expect(stateEntries.at(-1)?.data).toMatchObject({ phase: "stopped", stopReason: "aborted" });
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/aborted/), level: "info" },
+    });
+    const note = pi.sentMessages.at(-1);
+    expect(note?.message.customType).toBe("autocontinue-note");
+    expect(note?.options).toEqual({ deliverAs: "nextTurn" });
+    expect(String(note?.message.content)).toContain("user aborted the run");
+    expect(String(note?.message.content)).toContain("attempts used: 0/3");
+    expect(String(note?.message.content)).toContain("call autocontinue_start");
   });
 
   it("ignores extension messages for cycle cancellation", async () => {
@@ -211,6 +239,8 @@ describe("pi-autocontinue wiring", () => {
       data: { message: expect.stringMatching(/done.*All milestones complete/), level: "success" },
     });
     expect(notifications).toHaveLength(0);
+    // done 是 agent 知情且明确的终止，只有 "now 5" 的那条 continuation，不再追加 note
+    expect(pi.sentMessages).toHaveLength(1);
   });
 
   it("shows command stop once through its durable command entry", async () => {
@@ -225,6 +255,8 @@ describe("pi-autocontinue wiring", () => {
     });
     expect(notifications).toHaveLength(0);
     expect(pi.activeTools).not.toContain("autocontinue_stop");
+    // 显式命令停止不发模型 note
+    expect(pi.sentMessages).toHaveLength(0);
   });
 
   it("ignores a duplicate settled event before the pending injection starts", async () => {

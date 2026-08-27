@@ -125,6 +125,8 @@ The footer tracks two budgets. `cont` counts successful continuations (the budge
 
 Every stop — `done`, `blocked`, budget exhaustion, recovery exhaustion, abort, external user input, or `/autocontinue stop` — also appends a durable UI-only `[auto-continue]` transcript entry with the stop summary, so an unattended stop stays visible after the notification toast disappears.
 
+When a cycle stops because of a user interruption (`aborted` or a new user input), the extension additionally queues a model-visible note that is delivered with your next prompt (via `nextTurn`, never triggering a turn on its own). The note records that protection stopped and tells the agent to call `autocontinue_start` if you resume the workflow — so a long-running conductor that forgot the original "enable auto-continue" instruction still re-arms after an interruption. Explicit terminal stops (`done`, `blocked`, `/autocontinue stop`, exhausted budgets) do not queue notes.
+
 ## Continuation And Recovery Budgets
 
 The normal budget counts successful auto-continuation runs. An attempt is reserved before injection and committed only after the corresponding assistant run succeeds.

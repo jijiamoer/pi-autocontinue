@@ -29,6 +29,8 @@ const COMMAND_ENTRY_TYPE = "autocontinue-command";
 const STOP_TOOL_NAME = "autocontinue_stop";
 const START_TOOL_NAME = "autocontinue_start";
 const CUSTOM_MESSAGE_TYPE = "autocontinue-prompt";
+/** 中断停止时投递给模型的提示（进 LLM 上下文，区别于 UI-only 的 command entry）。 */
+const NOTE_MESSAGE_TYPE = "autocontinue-note";
 const DEFAULT_MAX_ATTEMPTS = 10;
 const MAX_ATTEMPTS = 100;
 
@@ -214,6 +216,17 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     return new Text(text, outputPad, 0);
   });
 
+  pi.registerMessageRenderer(NOTE_MESSAGE_TYPE, (message, { expanded, outputPad }, theme) => {
+    const details = message.details as { reason?: string } | undefined;
+    const summary = `${theme.fg("accent", "[auto-continue]")} note: protection stopped${details?.reason ? ` (${details.reason})` : ""}`;
+    const fullContent =
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) => (part.type === "text" ? part.text : "[image]")).join("\n");
+    const text = expanded ? `${summary}\n${theme.fg("dim", fullContent)}` : summary;
+    return new Text(text, outputPad, 0);
+  });
+
   const appendCommandEntry = (message: string, level: CommandMessageLevel = "info") => {
     pi.appendEntry<CommandEntryData>(COMMAND_ENTRY_TYPE, { message, level });
   };
@@ -275,6 +288,49 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     return loaded;
   };
 
+  /** 中断类停止的 reason 文案（模型可读）。 */
+  const RESUME_NOTE_REASONS = {
+    aborted: "user aborted the run",
+    user_input: "new user input stopped the cycle",
+  } as const;
+
+  type ResumeNoteReason = keyof typeof RESUME_NOTE_REASONS;
+
+  /**
+   * 给模型留一条 nextTurn note：告知保护刚被中断停止，恢复工作时应重新调 autocontinue_start。
+   * 长程任务中“开启保护”的原始指令会被压缩掉，而这条 note 落在打断点，处于上下文新鲜尾部。
+   * 发送失败不影响停止流程。
+   */
+  const queueResumeNote = (reason: ResumeNoteReason, stopped: AutoContinueState) => {
+    const content = [
+      "[From auto-continue | procedural, not user authorization]",
+      `The auto-continue cycle guarding this workflow is now stopped (reason: ${RESUME_NOTE_REASONS[reason]}; attempts used: ${stopped.attemptsUsed}/${stopped.maxAttempts}).`,
+      "Take no action from this note alone.",
+      "If the user resumes, redirects, or continues this workflow, call autocontinue_start to restore protection (a fresh attempt budget starts).",
+      "If the user is ending the work, do not restart it.",
+    ].join("\n");
+
+    try {
+      pi.sendMessage(
+        {
+          customType: NOTE_MESSAGE_TYPE,
+          content,
+          display: true,
+          details: {
+            cycleId: stopped.cycleId,
+            reason,
+            attemptsUsed: stopped.attemptsUsed,
+            maxAttempts: stopped.maxAttempts,
+          },
+        },
+        // nextTurn：不触发 run、不打断，随下一条用户输入进入模型上下文
+        { deliverAs: "nextTurn" },
+      );
+    } catch {
+      // note 仅提醒用途，失败不影响停止
+    }
+  };
+
   const stop = (
     ctx: ExtensionContext,
     reason: AutoContinueStopReason,
@@ -283,7 +339,7 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     notify = true,
   ) => {
     clearRecoveryTimer();
-    state.stop(reason, message, failure);
+    const stopped = state.stop(reason, message, failure);
     activeTemplate = null;
     setStopToolAvailability();
     updateStatus(ctx);
@@ -292,6 +348,10 @@ export default function piAutoContinue(pi: ExtensionAPI) {
       // 落一条 durable transcript 记录：notify 转瞬即逝，无人值守时的停止原因必须可追溯
       appendCommandEntry(message, level);
       if (notify) ctx.ui.notify(message, level === "success" ? "info" : level);
+    }
+    // 仅中断类停止（Esc / 用户输入）需要提醒模型：其余停止路径模型知情或语义上明确终止
+    if (stopped && (reason === "aborted" || reason === "user_input")) {
+      queueResumeNote(reason, stopped);
     }
   };
 
