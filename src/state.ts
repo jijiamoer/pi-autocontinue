@@ -175,6 +175,17 @@ export class AutoContinueStateManager {
     return this.getState();
   }
 
+  /**
+   * 记录 done 复核锚点：整个 cycle 至多一次复核，锚点assistant之后的新
+   * assistant entry 才允许确认 done。
+   */
+  requestCompletionReview(assistantEntryId: string): AutoContinueState | null {
+    if (!this.state || !isActiveState(this.state)) return null;
+    this.state.completionReviewEntryId = assistantEntryId;
+    this.persist();
+    return this.getState();
+  }
+
   stop(
     reason: AutoContinueStopReason,
     summary?: string,
@@ -188,6 +199,7 @@ export class AutoContinueStateManager {
     this.state.pendingInjection = undefined;
     this.state.reservedNormalAttempt = undefined;
     this.state.retryAt = undefined;
+    this.state.completionReviewEntryId = undefined;
     if (failure) {
       this.state.lastFailure = {
         ...failure,

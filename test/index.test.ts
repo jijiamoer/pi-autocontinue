@@ -223,25 +223,217 @@ describe("pi-autocontinue wiring", () => {
     });
   });
 
-  it("records a success-level durable entry when the agent reports done", async () => {
-    const { pi, ctx, notifications } = setup();
+  it("requires a completion review before the first done can stop", async () => {
+    const { pi, ctx, appendAssistant } = setup();
     await pi.command("autocontinue").handler("now 5", ctx);
+    appendAssistant();
 
-    await pi.tool("autocontinue_stop").execute(
+    const result = await pi.tool("autocontinue_stop").execute(
       "stop-1",
-      { reason: "done", summary: "All milestones complete" },
+      { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" },
       undefined,
       undefined,
       ctx,
     );
 
+    expect(result.terminate).toBeUndefined();
+    expect(result.details).toMatchObject({ active: true, completionReviewRequired: true });
+    expect(result.content[0].text).toContain("completion review required");
+    expect(pi.activeTools).toContain("autocontinue_stop");
+    const states = pi.entries.filter((e) => e.type === "autocontinue-state");
+    expect(states.at(-1)?.data.completionReviewEntryId).toBeDefined();
     expect(pi.entries.at(-1)).toMatchObject({
       type: "autocontinue-command",
-      data: { message: expect.stringMatching(/done.*All milestones complete/), level: "success" },
+      data: { message: "自动续跑：收到完成请求，正在复核任务完成情况。", level: "info" },
+    });
+  });
+
+  it("does not confirm done twice inside the same assistant turn", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("now 5", ctx);
+    appendAssistant();
+
+    for (let i = 0; i < 2; i++) {
+      const result = await pi.tool("autocontinue_stop").execute(
+        `stop-${i}`,
+        { reason: "done", summary: "All requested work is now complete." },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details).toMatchObject({ active: true, completionReviewRequired: true });
+    }
+    expect(pi.activeTools).toContain("autocontinue_stop");
+    const states = pi.entries.filter((e) => e.type === "autocontinue-state");
+    expect(states.at(-1)?.data.phase).toBe("running");
+  });
+
+  it("confirms done from a later assistant turn and terminates", async () => {
+    const { pi, ctx, notifications, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("now 5", ctx);
+    appendAssistant();
+
+    await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    appendAssistant();
+    const result = await pi.tool("autocontinue_stop").execute(
+      "stop-2",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(result.terminate).toBe(true);
+    expect(pi.activeTools).not.toContain("autocontinue_stop");
+    const states = pi.entries.filter((e) => e.type === "autocontinue-state");
+    expect(states.at(-1)?.data).toMatchObject({ phase: "stopped", stopReason: "done" });
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/done.*All requested work is now complete/), level: "success" },
     });
     expect(notifications).toHaveLength(0);
-    // done 是 agent 知情且明确的终止，只有 "now 5" 的那条 continuation，不再追加 note
+  });
+
+  it("keeps running continuations after a reviewed first done", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("now 5", ctx);
     expect(pi.sentMessages).toHaveLength(1);
+    appendAssistant();
+    await pi.fire("agent_settled", {}, ctx);
+    expect(pi.sentMessages).toHaveLength(2);
+
+    const review = await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(review.details).toMatchObject({ completionReviewRequired: true });
+
+    appendAssistant();
+    await pi.fire("agent_settled", {}, ctx);
+    expect(pi.sentMessages).toHaveLength(3);
+    expect(pi.activeTools).toContain("autocontinue_stop");
+  });
+
+  it("keeps the review anchor across session restore", async () => {
+    const branch = [
+      { type: "message", message: { role: "user", content: "Task" } },
+      { type: "message", id: "anchor-a1", message: { role: "assistant", content: [{ type: "text", text: "first done" }] } },
+      {
+        type: "custom",
+        id: "s1",
+        customType: "autocontinue-state",
+        data: {
+          version: 2,
+          cycleId: "cycle-restore",
+          phase: "running",
+          maxAttempts: 3,
+          attemptsUsed: 0,
+          recoveryAttemptsUsed: 0,
+          startedAt: 1,
+          templateSource: "built-in",
+          completionReviewEntryId: "anchor-a1",
+        },
+      },
+    ];
+    const { pi, ctx, appendAssistant } = setup({ branch });
+    await pi.fire("session_start", {}, ctx);
+
+    const first = await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(first.details).toMatchObject({ completionReviewRequired: true });
+
+    appendAssistant();
+    const second = await pi.tool("autocontinue_stop").execute(
+      "stop-2",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(second.terminate).toBe(true);
+  });
+
+  it("requires a fresh review for a restarted cycle", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("now 3", ctx);
+    appendAssistant();
+    await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    appendAssistant();
+    const confirm = await pi.tool("autocontinue_stop").execute(
+      "stop-2",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(confirm.terminate).toBe(true);
+
+    await pi.command("autocontinue").handler("now 3", ctx);
+    appendAssistant();
+    const firstOfNewCycle = await pi.tool("autocontinue_stop").execute(
+      "stop-3",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(firstOfNewCycle.details).toMatchObject({ completionReviewRequired: true });
+    expect(pi.activeTools).toContain("autocontinue_stop");
+  });
+
+  it("stops blocked immediately without a review", async () => {
+    const { pi, ctx } = setup();
+    await pi.command("autocontinue").handler("now 3", ctx);
+
+    const result = await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "blocked", summary: "需要用户提供凭证。" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(result.terminate).toBe(true);
+    const states = pi.entries.filter((e) => e.type === "autocontinue-state");
+    expect(states.at(-1)?.data).toMatchObject({ phase: "stopped", stopReason: "blocked" });
+  });
+
+  it("does not accept done when no assistant entry exists", async () => {
+    const { pi, ctx } = setup();
+    await pi.command("autocontinue").handler("now 3", ctx);
+
+    const result = await pi.tool("autocontinue_stop").execute(
+      "stop-1",
+      { reason: "done", summary: "All requested work is now complete." },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(result.details).toMatchObject({ completionReviewRequired: true });
+    expect(pi.activeTools).toContain("autocontinue_stop");
+    const states = pi.entries.filter((e) => e.type === "autocontinue-state");
+    expect(states.at(-1)?.data.completionReviewEntryId).toBeUndefined();
   });
 
   it("shows command stop once through its durable command entry", async () => {

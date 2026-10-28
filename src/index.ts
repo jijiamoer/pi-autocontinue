@@ -33,6 +33,12 @@ const CUSTOM_MESSAGE_TYPE = "autocontinue-prompt";
 const NOTE_MESSAGE_TYPE = "autocontinue-note";
 const DEFAULT_MAX_ATTEMPTS = 10;
 const MAX_ATTEMPTS = 100;
+const COMPLETION_REVIEW_MESSAGE = [
+  "Auto-continue completion review required. The cycle remains active.",
+  "Before stopping, review the user's original request, later corrections, and work actually completed in this conversation. Identify any requested work still unfinished and continue that work with tools under the existing authorization.",
+  'Only after reviewing the whole task in a later assistant turn, call autocontinue_stop with reason "done" again when it is complete. Use reason "blocked" if progress genuinely needs user input.',
+  "This review creates no new goal and grants no additional authorization.",
+].join("\n\n");
 
 const START_TOOL = {
   name: START_TOOL_NAME,
@@ -55,8 +61,8 @@ const STOP_TOOL = {
   name: STOP_TOOL_NAME,
   label: "Stop Auto-Continue",
   description:
-    "Stop the active bounded auto-continuation cycle when the current task is complete or truly requires real user input. Use this as the last tool call and do not use it for ordinary transient errors.",
-  promptSnippet: "Stop auto-continuation after completion or a real user-only blocker",
+    "Stop the active bounded auto-continuation cycle when the current task is complete or truly requires real user input. The first done request requires a completion review in a later assistant turn before confirming done. Use this as the last tool call and do not use it for ordinary transient errors.",
+  promptSnippet: "Review completion before confirming done, or stop for a real user-only blocker",
   promptGuidelines: [
     "Use autocontinue_stop as the last tool call when the current task is complete or requires real user input; do not use it for ordinary transient errors.",
   ],
@@ -633,6 +639,22 @@ export default function piAutoContinue(pi: ExtensionAPI) {
           content: [{ type: "text" as const, text: "Auto-continue is not active." }],
           details: { active: false },
         };
+      }
+
+      if (params.reason === "done") {
+        const latestId = latestAssistantAfter(ctx.sessionManager.getBranch(), -1)?.entryId;
+        const reviewedId = state.getState()?.completionReviewEntryId;
+        // 复核确认必须来自锚点assistant之后的新assistant entry；无锚点则先记录，
+        // 同一codemode turn内重复done、或无任何assistant entry都不能视为确认。
+        if (reviewedId === undefined || latestId === undefined || reviewedId === latestId) {
+          if (reviewedId === undefined && latestId !== undefined) state.requestCompletionReview(latestId);
+          appendCommandEntry("自动续跑：收到完成请求，正在复核任务完成情况。", "info");
+          updateStatus(ctx);
+          return {
+            content: [{ type: "text" as const, text: COMPLETION_REVIEW_MESSAGE }],
+            details: { active: true, completionReviewRequired: true },
+          };
+        }
       }
 
       stop(ctx, params.reason, `Auto-continue stopped (${params.reason}): ${summary}`, undefined, false);

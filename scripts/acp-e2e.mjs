@@ -153,10 +153,11 @@ async function runCase(name, script, maxAttempts) {
 			armedState?.phase === "armed" && armedState?.maxAttempts === maxAttempts,
 			`phase=${armedState?.phase} max=${armedState?.maxAttempts}`);
 
-		// 任务：prompt 返回时第2请求已完成（同一 run 内 queue）
+		// 任务：prompt 返回时全部请求已完成（同一 run 内 queue；done 含复核轮共3次）
+		const expectedCalls = script === "done" ? 3 : 2;
 		await conn.prompt({ sessionId, prompt: [{ type: "text", text: `请执行兼容性测试任务。${LODY_MCP_SUFFIX}` }] });
 		const callsAtResolve = readLog(mockLog);
-		record(`${name}.prompt-returned-after-2-calls`, callsAtResolve.length === 2,
+		record(`${name}.prompt-returned-after-${expectedCalls}-calls`, callsAtResolve.length === expectedCalls,
 			JSON.stringify(callsAtResolve.map((c) => ({ n: c.n, role: c.lastRole }))));
 		record(`${name}.2nd-request-is-continuation`,
 			callsAtResolve[1]?.lastRole === "user" && callsAtResolve[1]?.lastText?.includes("[From auto-continue"),
@@ -171,6 +172,17 @@ async function runCase(name, script, maxAttempts) {
 			progress.some((m) => m === `Auto-continue: continuation 1/${maxAttempts}.`),
 			JSON.stringify(progress));
 
+		// 首次 done 触发完成复核：复核 entry 持久化且经 patched adapter 可见
+		const reviewMsg = "自动续跑：收到完成请求，正在复核任务完成情况。";
+		if (script === "done") {
+			record(`${name}.review-entry`,
+				commandEntries(entries2).some((e) => e?.data?.message === reviewMsg),
+				JSON.stringify(commandEntries(entries2).map((e) => e?.data?.message)));
+			record(`${name}.review-visible-chunk`,
+				chunkTexts().some((t) => t.includes(reviewMsg)),
+				"review chunk forwarded");
+		}
+
 		const st = lastStateEntry(entries2);
 		if (script === "done") {
 			record(`${name}.state-stopped-done`, st?.phase === "stopped" && st?.stopReason === "done",
@@ -181,7 +193,7 @@ async function runCase(name, script, maxAttempts) {
 				`phase=${st?.phase} stopReason=${st?.stopReason} attemptsUsed=${st?.attemptsUsed}`);
 		}
 		const stopMsg = commandEntries(entries2).map((e) => e?.data?.message).join(" | ");
-		const stopPattern = script === "done" ? /stopped \(done\): 调查完成。/ : /stopped after 1 successful attempts/;
+		const stopPattern = script === "done" ? /stopped \(done\): All requested work is now complete\./ : /stopped after 1 successful attempts/;
 		record(`${name}.stop-visible-entry`, stopPattern.test(stopMsg), stopMsg.slice(0, 160));
 
 		const taskChunks = chunkTexts();

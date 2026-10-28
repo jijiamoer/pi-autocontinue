@@ -45,6 +45,8 @@ export interface AutoContinueState {
   startedFromLeafId?: string;
   templateSource: string;
   lastHandledSettlementId?: string;
+  /** 首次 done 复核锚点：记录发起复核的 assistant entry，确认须来自其后的新 assistant turn。 */
+  completionReviewEntryId?: string;
   pendingInjection?: PendingInjection;
   reservedNormalAttempt?: number;
   retryAt?: number;
@@ -155,6 +157,7 @@ function parseCurrentState(candidate: Record<string, unknown>): AutoContinueStat
   if (!isOptionalId(candidate.startedFromLeafId)) return undefined;
   if (typeof candidate.templateSource !== "string") return undefined;
   if (!isOptionalId(candidate.lastHandledSettlementId)) return undefined;
+  if (!isOptionalId(candidate.completionReviewEntryId)) return undefined;
   if (candidate.stoppedAt !== undefined && !isFiniteNumber(candidate.stoppedAt)) return undefined;
   if (candidate.stopReason !== undefined && !STOP_REASONS.includes(candidate.stopReason as AutoContinueStopReason)) {
     return undefined;
@@ -197,6 +200,9 @@ function parseCurrentState(candidate: Record<string, unknown>): AutoContinueStat
     ...(candidate.lastHandledSettlementId === undefined
       ? {}
       : { lastHandledSettlementId: candidate.lastHandledSettlementId }),
+    ...(candidate.completionReviewEntryId === undefined
+      ? {}
+      : { completionReviewEntryId: candidate.completionReviewEntryId }),
     ...(pendingInjection === undefined ? {} : { pendingInjection }),
     ...(candidate.reservedNormalAttempt === undefined
       ? {}

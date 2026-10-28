@@ -1,6 +1,6 @@
 // ACP e2e 测试 fixture：以 pi -e 扩展注入，注册 compat-mock provider。
 // 每次模型请求向 ACP_MOCK_LOG 追加一行 JSON；响应脚本由 ACP_MOCK_SCRIPT 选择：
-//   done    — 第1轮文本，第2轮 autocontinue_stop{done}
+//   done    — 第1轮文本，第2/3轮两次 autocontinue_stop{done}（首次触发完成复核）
 //   budget  — 永远文本
 //   blocked — 第1轮即 autocontinue_stop{blocked}
 import { appendFileSync } from "node:fs";
@@ -89,7 +89,8 @@ function emitScripted(
 }
 
 function scriptTool(script: string, n: number): { reason: string; summary: string } | undefined {
-	if (script === "done" && n === 2) return { reason: "done", summary: "调查完成。" };
+	if (script === "done" && n === 2) return { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" };
+	if (script === "done" && n === 3) return { reason: "done", summary: "All requested work is now complete." };
 	if (script === "blocked" && n === 1) return { reason: "blocked", summary: "需要用户提供凭证。" };
 	return undefined;
 }

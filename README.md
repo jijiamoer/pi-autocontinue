@@ -116,7 +116,7 @@ The tool:
 
 ### `autocontinue_stop`
 
-This tool is active only while a cycle is armed or running. The agent must call it as its final tool call when:
+The tool is active only while a cycle is armed or running. The first `done` request keeps the cycle active and returns instructions to review the original request, later corrections, and completed work. A second `done` call from a later assistant turn confirms completion. `blocked` stops immediately. No user-written goal is required. The agent must call it as its final tool call when:
 
 - `reason: "done"`: the current workflow is complete
 - `reason: "blocked"`: progress requires genuine user input and no authorized path remains

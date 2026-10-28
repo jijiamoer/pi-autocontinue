@@ -97,6 +97,52 @@ describe("AutoContinueStateManager", () => {
     expect(pi.appendEntry).toHaveBeenCalledTimes(1);
   });
 
+  it("persists the completion-review anchor and clears it on stop and restart", () => {
+    const pi = makePi();
+    const manager = new AutoContinueStateManager(pi);
+
+    expect(manager.requestCompletionReview("assistant-1")).toBeNull();
+    manager.startNow(3, "built-in");
+    manager.requestCompletionReview("assistant-1");
+    expect(manager.getState()?.completionReviewEntryId).toBe("assistant-1");
+
+    manager.requestCompletionReview("assistant-2");
+    expect(manager.getState()?.completionReviewEntryId).toBe("assistant-2");
+
+    manager.stop("done", "complete");
+    expect(manager.getState()?.completionReviewEntryId).toBeUndefined();
+
+    manager.startNow(3, "built-in");
+    expect(manager.getState()?.completionReviewEntryId).toBeUndefined();
+  });
+
+  it("restores completionReviewEntryId and rejects malformed values", () => {
+    const stateData = (extra: Record<string, unknown> = {}) => ({
+      version: 2,
+      cycleId: "cycle-9",
+      phase: "running",
+      maxAttempts: 5,
+      attemptsUsed: 0,
+      recoveryAttemptsUsed: 0,
+      startedAt: 1,
+      templateSource: "built-in",
+      ...extra,
+    });
+    const load = (data: Record<string, unknown>) => {
+      const manager = new AutoContinueStateManager(makePi());
+      manager.loadFromSession(makeCtx([{ type: "custom", customType: "autocontinue-state", data }]));
+      return manager;
+    };
+
+    expect(load(stateData({ completionReviewEntryId: "assistant-7" })).getState()?.completionReviewEntryId).toBe(
+      "assistant-7",
+    );
+    const legacy = load(stateData());
+    expect(legacy.getState()).toMatchObject({ cycleId: "cycle-9", phase: "running" });
+    expect(legacy.getState()?.completionReviewEntryId).toBeUndefined();
+    expect(load(stateData({ completionReviewEntryId: 42 })).getState()).toBeNull();
+  });
+
   it("restores current and legacy state from the current branch", () => {
     const manager = new AutoContinueStateManager(makePi());
     manager.loadFromSession(

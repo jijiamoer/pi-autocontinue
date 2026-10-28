@@ -46,6 +46,7 @@ function makeMock(script, maxCalls) {
 			n,
 			hasAutocontinuePrompt: ctxText.includes("autocontinue-prompt"),
 			hasAutoContinueText: ctxText.includes("auto-continue"),
+			hasReviewText: ctxText.includes("completion review"),
 			lastRole: lastMsg?.role,
 			lastText: (lastText ?? "").slice(0, 120),
 		});
@@ -156,10 +157,17 @@ async function makeSession(mock) {
 	};
 }
 
-// 用例1+2+3：/autocontinue 2 → 任务 → 第2请求含续跑提示 → done 工具停止
+// 用例1+2+3：/autocontinue 2 → 任务 → 续跑 → 首次done触发复核 → 再次done才停止
 async function caseArmDone() {
-	console.log("\n=== CASE arm+done: /autocontinue 2, 文本回复, autocontinue_stop done ===");
-	const mock = makeMock([{ text: "我会开始调查。" }, { tool: { reason: "done", summary: "调查完成。" } }], 2);
+	console.log("\n=== CASE arm+done: /autocontinue 2, 文本回复, 两次 autocontinue_stop done（复核） ===");
+	const mock = makeMock(
+		[
+			{ text: "我会开始调查。" },
+			{ tool: { reason: "done", summary: "完成本轮指纹实测，DKBY口碑与亲和性仍有缺口。" } },
+			{ tool: { reason: "done", summary: "All requested work is now complete." } },
+		],
+		3,
+	);
 	const t = await makeSession(mock);
 	try {
 		record("arm.load-errors", t.extensionsResult.errors.length === 0, JSON.stringify(t.extensionsResult.errors));
@@ -167,18 +175,27 @@ async function caseArmDone() {
 		record("arm.command-handled", t.dispositions[0]?.endsWith("→handled") === true, t.dispositions[0]);
 		record("arm.no-model-call", mock.calls.length === 0, `calls=${mock.calls.length}`);
 		await t.prompt("请执行兼容性测试任务。");
-		await t.waitFor(() => mock.calls.length >= 2, "2 model calls");
+		await t.waitFor(() => mock.calls.length >= 3, "3 model calls");
 		await t.waitFor(() => t.state.settles >= 1 && t.session.isIdle, "settled+idle");
 		await t.drain();
-		record("done.calls==2", mock.calls.length === 2,
+		record("done.calls==3", mock.calls.length === 3,
 			JSON.stringify(mock.calls.map((c) => ({ n: c.n, act: c.hasAutoContinueText, role: c.lastRole }))));
 		record("done.2nd-context-marker", mock.calls[1]?.hasAutoContinueText === true,
 			`customTypeInCtx=${mock.calls[1]?.hasAutocontinuePrompt} lastRole=${mock.calls[1]?.lastRole} lastText=${JSON.stringify(mock.calls[1]?.lastText)}`);
+		// 首次 done 返回 COMPLETION_REVIEW_MESSAGE，进入第3次请求的上下文
+		record("done.review-text-in-3rd-context", mock.calls[2]?.hasReviewText === true,
+			`hasReview=${mock.calls[2]?.hasReviewText} lastText=${JSON.stringify(mock.calls[2]?.lastText)}`);
+		// 首次 done 后留下 active 复核 command entry
+		const reviewEntry = t.session.sessionManager
+			.getBranch()
+			.find((e) => e.type === "custom" && e.customType === "autocontinue-command" &&
+				e.data?.message === "自动续跑：收到完成请求，正在复核任务完成情况。");
+		record("done.review-entry-appended", reviewEntry !== undefined, JSON.stringify(reviewEntry?.data));
 		const st = t.lastAutoContinueState();
 		record("done.state-stopped-done",
 			st?.phase === "stopped" && st?.stopReason === "done",
 			`phase=${st?.phase} stopReason=${st?.stopReason} attemptsUsed=${st?.attemptsUsed}`);
-		// agent_before_settle 在同一 run 内 queue 续跑：2 次 provider 请求只产生 1 次 agent_settled
+		// agent_before_settle 在同一 run 内 queue 续跑：3 次 provider 请求只产生 1 次 agent_settled
 		record("done.single-final-settle", t.state.settles === 1, `settles=${t.state.settles}`);
 		record("done.no-extension-error", t.extErrors.length === 0, JSON.stringify(t.extErrors));
 	} finally { t.cleanup(); await t.session.dispose(); }
