@@ -1,0 +1,50 @@
+--- a/dist/connection.js	1970-01-01 08:00:00
++++ b/dist/connection.js	2026-10-28 18:13:52
+@@ -11,6 +11,9 @@
+ import { QUESTION_PREFIX, questionsSchema } from "./builtin-tools.js";
+ import { BlockDeltaSequencer } from "./block-deltas.js";
+ import { buildModelCapabilitiesMeta, modelCapabilitySchema, } from "./model-capabilities.js";
++// Lody appends MCP guidance to every prompt block; a control command with that
++// trailer parses as extra arguments, so strip the exact suffix for /autocontinue only.
++const LODY_MCP_COMMAND_SUFFIX = "\n\nUse the available Lody MCP tools when relevant; rely on their tool descriptions for complete, current capabilities and usage guidance.";
+ const modelSchema = z.object({
+     provider: z.string(),
+     id: z.string(),
+@@ -648,7 +651,13 @@
+                     throw new Error(`Pi does not support prompt content: ${block.type}`);
+             }
+         }
+-        return { message: text.join("\n\n"), images };
++        const message = text.join("\n\n");
++        return {
++            message: /^\/autocontinue(?:\s|$)/.test(message) && message.endsWith(LODY_MCP_COMMAND_SUFFIX)
++                ? message.slice(0, -LODY_MCP_COMMAND_SUFFIX.length)
++                : message,
++            images,
++        };
+     }
+     async emitDeltas(deltas) {
+         for (const delta of deltas)
+@@ -1030,7 +1039,22 @@
+             case "summarization_retry_finished":
+                 // This event ends the backoff, not the enclosing compaction operation.
+                 await this.endActivity(run, "summaryRetry", run.cancelled ? "Cancelled" : undefined);
++                break;
++            case "entry_appended": {
++                // Pi's durable custom entries are invisible to ACP clients: the session
++                // event switch never forwards them. Surface only auto-continue command
++                // feedback as assistant chunks; all other custom entries stay ignored.
++                const entry = event.entry;
++                if (entry?.type === "custom" &&
++                    entry.customType === "autocontinue-command" &&
++                    typeof entry.data?.message === "string") {
++                    await this.update({
++                        sessionUpdate: "agent_message_chunk",
++                        content: { type: "text", text: `${entry.data.message}\n` },
++                    });
++                }
+                 break;
++            }
+             case "extension_error": {
+                 const diagnostic = z
+                     .object({ event: z.string(), error: z.string() })

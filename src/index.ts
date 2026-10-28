@@ -186,6 +186,8 @@ export default function piAutoContinue(pi: ExtensionAPI) {
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
   let runtimeGeneration = 0;
   let providerResponse: ProviderResponseSnapshot | undefined;
+  /** 本轮 agent_start 以来，settle 边界是否已被 agent_before_settle 处理（防双发）。 */
+  let boundaryHandled = false;
 
   pi.registerEntryRenderer<CommandEntryData>(COMMAND_ENTRY_TYPE, (entry, _options, theme) => {
     const data = entry.data ?? { message: "Auto-continue command completed.", level: "info" };
@@ -413,6 +415,12 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     if (!pending) return;
 
     const current = state.getState()!;
+    // 持久化一次进度可见反馈（adapter 经 entry_appended 转发为 assistant chunk）
+    appendCommandEntry(
+      pending.kind === "continuation"
+        ? `Auto-continue: continuation ${pending.normalAttempt}/${current.maxAttempts}.`
+        : `Auto-continue: transport recovery ${pending.recoveryAttempt}/${MAX_RECOVERY_ATTEMPTS} · continuation ${current.attemptsUsed}/${current.maxAttempts}.`,
+    );
     const template = activeTemplate ?? loadActiveTemplate(ctx);
     const envelope: ContinuationEnvelope =
       pending.kind === "continuation"
@@ -508,9 +516,33 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     stop(ctx, "blocked", `Auto-continue requires real user input: ${outcome.failure.summary}`, outcome.failure);
   };
 
-  const handleSettled = (ctx: ExtensionContext) => {
+  const settledInjection = (ctx: ExtensionContext, pending: PendingInjection): AssistantSettlement | undefined => {
+    const reconciliation = reconcilePending(ctx, pending);
+    return reconciliation.kind === "settled" ? reconciliation.settlement : undefined;
+  };
+
+  /**
+   * agent_settled event.aborted 的无条件停机路径：中止的 run 跳过 agent_before_settle，
+   * 若只看 boundaryHandled，已 queue 续跑后被取消的 run 会把保护状态滞留在 running。
+   */
+  const stopAborted = (ctx: ExtensionContext) => {
     const current = state.getState();
-    if (current?.phase !== "running" || !ctx.isIdle()) return;
+    if (current?.phase !== "running") return;
+    const settlement = current.pendingInjection
+      ? settledInjection(ctx, current.pendingInjection)
+      : findUnprocessedSettlement(ctx, current);
+    let summary = "Assistant run was aborted.";
+    if (settlement) {
+      const outcome = classifySettledAssistant(settlement.message, providerResponse, ctx.model?.contextWindow);
+      providerResponse = undefined;
+      if (outcome.kind === "aborted") summary = outcome.summary;
+    }
+    stop(ctx, "aborted", `Auto-continue stopped because the assistant run was aborted: ${summary}`);
+  };
+
+  const handleSettled = (ctx: ExtensionContext, allowActive = false) => {
+    const current = state.getState();
+    if (current?.phase !== "running" || (!allowActive && !ctx.isIdle())) return;
 
     if (current.pendingInjection) {
       const reconciliation = reconcilePending(ctx, current.pendingInjection);
@@ -628,6 +660,7 @@ export default function piAutoContinue(pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", async () => {
+    boundaryHandled = false;
     if (state.getState()?.pendingInjection) state.markPendingStarted();
     providerResponse = undefined;
   });
@@ -653,19 +686,36 @@ export default function piAutoContinue(pi: ExtensionAPI) {
     return { action: "continue" };
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_before_settle", async (_event, ctx) => {
+    // 续跑在 run 仍活动时 queue：sendMessage triggerTurn 的注入被同一 agent run 消费，
+    // 不走会先行完结宿主请求的 agent_settled 路径。
+    boundaryHandled = true;
+    handleSettled(ctx, true);
+  });
+
+  pi.on("agent_settled", async (event, ctx) => {
+    // 中止的 run 跳过 agent_before_settle；aborted 停机必须在 fallback 判断之前。
+    if (event.aborted) {
+      stopAborted(ctx);
+      return;
+    }
+    // 无 agent_before_settle 的旧版 Pi 走此 fallback；同轮已被 before_settle 处理则不重复。
+    if (boundaryHandled) return;
     handleSettled(ctx);
   });
 
   pi.registerCommand("autocontinue", {
     description: "Bounded continuation after the agent settles: /autocontinue [attempts]",
     handler: async (args, ctx) => {
+      // 参数错误时回显接收到的原始 args（ACP 可见的错误反馈，限控制命令）
+      const showUsage = () =>
+        showCommandMessage(`${usage()}\nReceived arguments: ${JSON.stringify(args.slice(0, 200))}`, "warning");
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const subcommand = parts[0]?.toLowerCase();
 
       if (subcommand === "stop") {
         if (parts.length !== 1) {
-          showCommandMessage(usage(), "warning");
+          showUsage();
           return;
         }
         if (!state.isActive()) {
@@ -678,7 +728,7 @@ export default function piAutoContinue(pi: ExtensionAPI) {
 
       if (subcommand === "status") {
         if (parts.length !== 1) {
-          showCommandMessage(usage(), "warning");
+          showUsage();
           return;
         }
         showCommandMessage(formatStatus(state.getState()));
@@ -688,13 +738,13 @@ export default function piAutoContinue(pi: ExtensionAPI) {
       const now = subcommand === "now";
       const attemptsValue = now ? parts[1] : parts[0];
       if (parts.length > (now ? 2 : 1)) {
-        showCommandMessage(usage(), "warning");
+        showUsage();
         return;
       }
 
       const maxAttempts = parseAttempts(attemptsValue);
       if (maxAttempts === undefined) {
-        showCommandMessage(usage(), "warning");
+        showUsage();
         return;
       }
 

@@ -32,6 +32,7 @@ describe("pi-autocontinue wiring", () => {
     expect(pi.tool("autocontinue_start")).toBeDefined();
     expect(pi.tool("autocontinue_stop")).toBeDefined();
     expect(pi.handlers.get("agent_settled")).toHaveLength(1);
+    expect(pi.handlers.get("agent_before_settle")).toHaveLength(1);
     expect(pi.handlers.get("after_provider_response")).toHaveLength(1);
     expect(pi.handlers.get("session_shutdown")).toHaveLength(1);
   });
@@ -259,6 +260,74 @@ describe("pi-autocontinue wiring", () => {
     expect(pi.sentMessages).toHaveLength(0);
   });
 
+  it("queues the continuation inside the active run at agent_before_settle", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("2", ctx);
+    await pi.fire("input", { text: "Implement the task", source: "interactive" }, ctx);
+    appendAssistant();
+    // before_settle 触发时 run 仍在活动（isIdle=false），queue 由同一 run 消费
+    ctx.setIdle(false);
+    await pi.fire("agent_before_settle", {}, ctx);
+
+    expect(pi.sentMessages).toHaveLength(1);
+    expect(pi.sentMessages[0].message.customType).toBe("autocontinue-prompt");
+    expect(pi.sentMessages[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+  });
+
+  it("does not double-queue when agent_settled follows a handled before_settle boundary", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("3", ctx);
+    await pi.fire("input", { text: "Implement the task", source: "interactive" }, ctx);
+    appendAssistant();
+    ctx.setIdle(false);
+    await pi.fire("agent_before_settle", {}, ctx);
+    expect(pi.sentMessages).toHaveLength(1);
+
+    ctx.setIdle(true);
+    await pi.fire("agent_settled", {}, ctx);
+    expect(pi.sentMessages).toHaveLength(1);
+  });
+
+  it("stops unconditionally when agent_settled reports aborted after a queued boundary", async () => {
+    const { pi, ctx, appendAssistant } = setup();
+    await pi.command("autocontinue").handler("3", ctx);
+    await pi.fire("input", { text: "Implement the task", source: "interactive" }, ctx);
+    await pi.fire("agent_start", {}, ctx);
+    appendAssistant();
+    ctx.setIdle(false);
+    await pi.fire("agent_before_settle", {}, ctx);
+    expect(pi.sentMessages).toHaveLength(1);
+
+    // 中止的 run 跳过 agent_before_settle：即使 boundary 已处理也必须停机
+    ctx.setIdle(true);
+    await pi.fire("agent_settled", { aborted: true }, ctx);
+
+    const stateEntries = pi.entries.filter((entry) => entry.type === "autocontinue-state");
+    expect(stateEntries.at(-1)?.data).toMatchObject({ phase: "stopped", stopReason: "aborted" });
+    expect(pi.entries.at(-1)).toMatchObject({
+      type: "autocontinue-command",
+      data: { message: expect.stringMatching(/aborted/), level: "info" },
+    });
+    const note = pi.sentMessages.at(-1);
+    expect(note?.message.customType).toBe("autocontinue-note");
+    expect(note?.options).toEqual({ deliverAs: "nextTurn" });
+  });
+
+  it("appends a progress command entry before dispatching a continuation", async () => {
+    const { pi, ctx, appendAssistant, branch } = setup();
+    await pi.command("autocontinue").handler("3", ctx);
+    await pi.fire("input", { text: "Implement the task", source: "interactive" }, ctx);
+    appendAssistant();
+    await pi.fire("agent_settled", {}, ctx);
+
+    expect(pi.sentMessages).toHaveLength(1);
+    const entry = branch
+      .filter((e) => e.type === "custom" && e.customType === "autocontinue-command")
+      .at(-1);
+    // adapter entry_appended 转发所依赖的形状：custom + data.message string
+    expect(entry?.data.message).toBe("Auto-continue: continuation 1/3.");
+  });
+
   it("ignores a duplicate settled event before the pending injection starts", async () => {
     const { pi, ctx, appendAssistant } = setup();
     await pi.command("autocontinue").handler("now 3", ctx);
@@ -289,7 +358,8 @@ describe("pi-autocontinue wiring", () => {
       expect(pi.sentMessages).toHaveLength(1);
       expect(status.get("autocontinue")).toBe("auto retry 1/6 in 15s · cont 0/3");
       expect(notifications.at(-1)?.message).toMatch(/scheduled in 15s/);
-      expect(pi.entries.at(-1)?.data.attemptsUsed).toBe(0);
+      const stateAtRetry = () => pi.entries.filter((e) => e.type === "autocontinue-state").at(-1)?.data;
+      expect(stateAtRetry().attemptsUsed).toBe(0);
 
       await vi.advanceTimersByTimeAsync(15_000);
       expect(pi.sentMessages).toHaveLength(2);
@@ -307,8 +377,8 @@ describe("pi-autocontinue wiring", () => {
       appendAssistant();
       await pi.fire("agent_settled", {}, ctx);
 
-      expect(pi.entries.at(-1)?.data.attemptsUsed).toBe(1);
-      expect(pi.entries.at(-1)?.data.recoveryAttemptsUsed).toBe(0);
+      expect(stateAtRetry().attemptsUsed).toBe(1);
+      expect(stateAtRetry().recoveryAttemptsUsed).toBe(0);
       expect(pi.sentMessages[3]?.message.content).toMatch(/attempt 2\/3/);
     } finally {
       vi.useRealTimers();
@@ -334,7 +404,8 @@ describe("pi-autocontinue wiring", () => {
       expect(pi.sentMessages).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(pi.sentMessages).toHaveLength(2);
-      expect(pi.entries.at(-1)?.data.attemptsUsed).toBe(0);
+      const lastState = pi.entries.filter((e) => e.type === "autocontinue-state").at(-1)?.data;
+      expect(lastState.attemptsUsed).toBe(0);
     } finally {
       vi.useRealTimers();
     }

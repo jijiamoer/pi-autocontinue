@@ -1,12 +1,23 @@
 # pi-autocontinue
 
-`pi-autocontinue` is a bounded keepalive extension for [Pi](https://github.com/badlogic/pi-mono). It resumes the current user-authorized workflow after `agent_settled` without running a second supervisor model or storing a semantic goal.
+`pi-autocontinue` is a bounded keepalive extension for [Pi](https://github.com/badlogic/pi-mono). It resumes the current user-authorized workflow at the settle boundary without running a second supervisor model or storing a semantic goal. On Pi 1.3 it queues the continuation inside the active run at `agent_before_settle`, so the host request stays open until the workflow actually settles; on older Pi it falls back to `agent_settled`.
 
 It is designed for long-running conductor workflows that may stop unexpectedly after a model misunderstanding or transient provider failure. It does not create goals, expand scope, or grant user authorization.
 
 ## Fork compatibility
 
 This is the `jijiamoer` fork of `limars874/pi-autocontinue`. It keeps the original Pi `0.83.x` support and additionally supports Pi `1.3.0`, verified by running the extension's existing suite plus a real-SDK integration check (`scripts/sdk-compat.mjs`) against the local Pi `1.3.0` packages. The tested `1.3.0` packages are not yet on the npm registry, so that check resolves them from the local Pi install rather than downloading them; the committed dev lockfile keeps the public `0.83.0` devDependencies so ordinary installs still work. No tool definitions, prompts, or model-facing text were changed. In Lody, the extension must additionally be selected in the Pi agent settings after it is installed.
+
+On Pi 1.3 the fork moves continuation dispatch from `agent_settled` to `agent_before_settle`: `sendMessage(..., { deliverAs: "followUp", triggerTurn: true })` is queued while the agent run is still active and consumed by the same run, so an ACP host request only completes after the final settlement. `agent_settled` remains as a fallback for older Pi; `event.aborted` stops unconditionally before that fallback.
+
+### Lody runtime patches
+
+The Lody ACP adapter and the Pi session manager shipped on this machine need two small patches from `patches/` for full behavior; both were produced and verified against the local `0.2.0-lody.81c960da72f6` package:
+
+- `patches/lody-acp-entry-feedback.patch` (applies to `node/package/dist/connection.js`): forwards `autocontinue-command` custom entries as `agent_message_chunk` so armed/progress/stop feedback is visible in Lody, and strips the exact Lody MCP guidance suffix from `/autocontinue` control commands so arguments parse.
+- `patches/pi-command-state-persistence.patch` (applies inside `node_modules/@earendil-works/pi-coding-agent` to both `dist/core/session-manager.js` and the bundled CLI implementation `dist/bundle/chunks/chunk-66G7ITPS.js` in this runtime version): lets an `autocontinue-state` custom entry create the session JSONL, so a command-only armed session survives host idle eviction.
+
+Originals were backed up next to the patched files (`*.bak-<timestamp>`). Re-apply both patches after any managed-runtime upgrade that replaces the package; verify with `scripts/acp-e2e.mjs` (set `PI_ACP_PACKAGE_ROOT` to the package root, or pass the `dist` directory as the first argument).
 
 ## Requirements
 

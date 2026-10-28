@@ -168,7 +168,7 @@ async function caseArmDone() {
 		record("arm.no-model-call", mock.calls.length === 0, `calls=${mock.calls.length}`);
 		await t.prompt("请执行兼容性测试任务。");
 		await t.waitFor(() => mock.calls.length >= 2, "2 model calls");
-		await t.waitFor(() => t.state.settles >= 2 && t.session.isIdle, "settled+idle");
+		await t.waitFor(() => t.state.settles >= 1 && t.session.isIdle, "settled+idle");
 		await t.drain();
 		record("done.calls==2", mock.calls.length === 2,
 			JSON.stringify(mock.calls.map((c) => ({ n: c.n, act: c.hasAutoContinueText, role: c.lastRole }))));
@@ -178,6 +178,8 @@ async function caseArmDone() {
 		record("done.state-stopped-done",
 			st?.phase === "stopped" && st?.stopReason === "done",
 			`phase=${st?.phase} stopReason=${st?.stopReason} attemptsUsed=${st?.attemptsUsed}`);
+		// agent_before_settle 在同一 run 内 queue 续跑：2 次 provider 请求只产生 1 次 agent_settled
+		record("done.single-final-settle", t.state.settles === 1, `settles=${t.state.settles}`);
 		record("done.no-extension-error", t.extErrors.length === 0, JSON.stringify(t.extErrors));
 	} finally { t.cleanup(); await t.session.dispose(); }
 }
@@ -191,9 +193,10 @@ async function caseBudget() {
 		await t.prompt("/autocontinue 1");
 		await t.prompt("请执行兼容性测试任务。");
 		await t.waitFor(() => mock.calls.length >= 2, "2 model calls");
-		await t.waitFor(() => t.state.settles >= 2 && t.session.isIdle, "settled+idle");
+		await t.waitFor(() => t.state.settles >= 1 && t.session.isIdle, "settled+idle");
 		await t.drain();
 		record("budget.calls==2", mock.calls.length === 2, JSON.stringify(mock.calls.map((c) => c.n)));
+		record("budget.single-final-settle", t.state.settles === 1, `settles=${t.state.settles}`);
 		const st = t.lastAutoContinueState();
 		record("budget.state-stopped-budget_exhausted",
 			st?.phase === "stopped" && st?.stopReason === "budget_exhausted" && st?.attemptsUsed === 1,
@@ -217,6 +220,7 @@ async function caseBlocked() {
 		record("blocked.state-stopped-blocked",
 			st?.phase === "stopped" && st?.stopReason === "blocked",
 			`phase=${st?.phase} stopReason=${st?.stopReason}`);
+		record("blocked.single-final-settle", t.state.settles === 1, `settles=${t.state.settles}`);
 		record("blocked.no-extension-error", t.extErrors.length === 0, JSON.stringify(t.extErrors));
 	} finally { t.cleanup(); await t.session.dispose(); }
 }
