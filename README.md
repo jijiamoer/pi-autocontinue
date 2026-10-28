@@ -4,15 +4,19 @@
 
 It is designed for long-running conductor workflows that may stop unexpectedly after a model misunderstanding or transient provider failure. It does not create goals, expand scope, or grant user authorization.
 
+## Fork compatibility
+
+This is the `jijiamoer` fork of `limars874/pi-autocontinue`. It keeps the original Pi `0.83.x` support and additionally supports Pi `1.3.0`, verified by running the extension's existing suite plus a real-SDK integration check (`scripts/sdk-compat.mjs`) against the local Pi `1.3.0` packages. The tested `1.3.0` packages are not yet on the npm registry, so that check resolves them from the local Pi install rather than downloading them; the committed dev lockfile keeps the public `0.83.0` devDependencies so ordinary installs still work. No tool definitions, prompts, or model-facing text were changed. In Lody, the extension must additionally be selected in the Pi agent settings after it is installed.
+
 ## Requirements
 
-- Pi `>=0.83.0 <1.0.0`
+- Pi `>=0.83.0 <1.0.0 || >=1.3.0 <1.4.0`
 - Node.js `>=22.19.0`
 - A trusted project when using project-local configuration
 
 Pi packages execute with full local user permissions. Review the source before installing it.
 
-## Install From GitHub
+## Upstream install (Pi 0.83)
 
 Install the tested immutable revision globally:
 

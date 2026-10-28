@@ -1,6 +1,6 @@
 {
   "name": "pi-autocontinue",
-  "version": "0.1.0",
+  "version": "0.1.1-lody.1",
   "description": "A bounded keepalive extension that continues the current Pi task after the agent settles",
   "license": "MIT",
   "repository": {
@@ -17,9 +17,9 @@
   "keywords": ["pi-package", "pi", "pi-extension", "autocontinue", "keepalive", "agent"],
   "files": ["src", "README.md", "LICENSE"],
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.83.0 <1.0.0",
-    "@earendil-works/pi-coding-agent": ">=0.83.0 <1.0.0",
-    "@earendil-works/pi-tui": ">=0.83.0 <1.0.0",
+    "@earendil-works/pi-ai": ">=0.83.0 <1.0.0 || >=1.3.0 <1.4.0",
+    "@earendil-works/pi-coding-agent": ">=0.83.0 <1.0.0 || >=1.3.0 <1.4.0",
+    "@earendil-works/pi-tui": ">=0.83.0 <1.0.0 || >=1.3.0 <1.4.0",
     "typebox": ">=1.1.24 <2.0.0"
   },
   "scripts": {
